@@ -4,10 +4,10 @@
  * 	Amazon Simple Storage Service (http://aws.amazon.com/s3)
  *
  * Version:
- * 	2010.01.26
+ * 	2010.01.10
  *
  * Copyright:
- * 	2006-2010 Ryan Parman, Foleeo, Inc., and contributors.
+ * 	2006-2009 Foleeo, Inc., and contributors.
  *
  * License:
  * 	Simplified BSD License - http://opensource.org/licenses/bsd-license.php
@@ -288,11 +288,22 @@ class AmazonS3 extends CloudFusion
 
 			// Append additional parameters
 			$request .= '/' . $filename;
+			
+			if (isset($versionId) && !empty($versionId))
+			{
+			    $request .= 'versionId=' . $versionId;
+			}			
 
 			// List Object settings
-			if ($method == 'list_objects')
+			if ($method == 'list_objects' || $method == 'get_bucket')
 			{
 				$request = '';
+				
+				if (isset($versions) && $versions == true)
+				{
+				    $request .= 'versions';
+				    $filename .= '?versions';
+				}				
 
 				if (isset($prefix) && !empty($prefix))
 				{
@@ -315,6 +326,7 @@ class AmazonS3 extends CloudFusion
 				}
 
 				$request = '/?' . ltrim($request, '&');
+
 			}
 
 			// Logging
@@ -336,6 +348,13 @@ class AmazonS3 extends CloudFusion
 			{
 				$request .= '?acl';
 				$filename .= '?acl';
+			}
+
+			// Add versioning parameter for these methods
+			elseif ($method == 'enable_versioning' || $method == 'get_bucket_versioning')
+			{
+				$request .= '?versioning';
+				$filename .= '?versioning';
 			}
 
 			elseif ($method == 'get_object_url')
@@ -412,9 +431,6 @@ class AmazonS3 extends CloudFusion
 
 					foreach ($meta as $k => $v)
 					{
-						// Strip line breaks.
-						$v = str_replace(array("\r", "\n", '%0A'), '', $v);
-
 						$req->add_header('x-amz-meta-' . strtolower($k), $v);
 						$acl .= 'x-amz-meta-' . strtolower($k) . ':' . $v . "\n";
 					}
@@ -447,7 +463,7 @@ class AmazonS3 extends CloudFusion
 			// Add a body if we're creating or setting
 			if ($method == 'create_object' || $method == 'create_bucket' ||
 				$method == 'enable_logging' || $method == 'disable_logging' ||
-				$method == 'set_object_acl' || $method == 'set_bucket_acl')
+				$method == 'set_object_acl' || $method == 'set_bucket_acl' || $method == 'enable_versioning')
 			{
 				if (isset($body) && !empty($body))
 				{
@@ -474,9 +490,6 @@ class AmazonS3 extends CloudFusion
 
 					foreach ($meta as $k => $v)
 					{
-						// Strip line breaks.
-						$v = str_replace(array("\r", "\n", '%0A'), '', $v);
-
 						$req->add_header('x-amz-meta-' . strtolower($k), $v);
 						$hmeta .= 'x-amz-meta-' . strtolower($k) . ':' . $v . "\n";
 					}
@@ -495,7 +508,7 @@ class AmazonS3 extends CloudFusion
 			if ($qsa)
 			{
 				// Prepare the string to sign
-				$stringToSign = "$verb\n\n\n$since_epoch\n$acl$hmeta/$bucket$filename";
+				$stringToSign = "$verb\n$md5\n$contentType\n$since_epoch\n$acl$hmeta/$bucket$filename";
 			}
 			else
 			{
@@ -532,10 +545,10 @@ class AmazonS3 extends CloudFusion
 
 			// Prepare the response.
 			$headers = $req->get_response_header();
-			$headers['x-cloudfusion-redirects'] = $redirects;
-			$headers['x-cloudfusion-requesturl'] = $this->request_url;
-			$headers['x-cloudfusion-stringtosign'] = $stringToSign;
-			$headers['x-cloudfusion-requestheaders'] = $req->request_headers;
+			$headers['x-tarzan-redirects'] = $redirects;
+			$headers['x-tarzan-requesturl'] = $this->request_url;
+			$headers['x-tarzan-stringtosign'] = $stringToSign;
+			$headers['x-tarzan-requestheaders'] = $req->request_headers;
 
 			if (strpos($req->get_response_body(), '<?xml') !== false)
 			{
@@ -655,7 +668,12 @@ class AmazonS3 extends CloudFusion
 	{
 		if (!$opt) $opt = array();
 
-		return $this->list_objects($bucket, $opt);
+		// Add this to our request
+		$opt['verb'] = HTTP_GET;
+		$opt['method'] = 'get_bucket';
+
+		// Authenticate to S3
+		return $this->authenticate($bucket, $opt);
 	}
 
 	/**
@@ -780,6 +798,39 @@ class AmazonS3 extends CloudFusion
 		}
 
 		return false;
+	}
+
+	/**
+	 * Method: enable_versioning()
+	 * 	Enables versioning for a bucket. Bucket must exist already.
+	 *
+	 * Access:
+	 * 	public
+ 	 *
+	 * Parameters:
+	 * 	bucket - _string_ (Required) The name of the bucket to be used.
+	 * 	returnCurlHandle - _boolean_ (Optional) A private toggle that will return the CURL handle for the request rather than actually completing the request. This is useful for MultiCURL requests.
+	 *
+	 * Returns:
+	 * 	<ResponseCore> object 
+ 	 *
+	 * See Also:
+	 * 	
+	 * 	
+	 */
+	public function enable_versioning($bucket, $returnCurlHandle = null)
+	{
+        $body = '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>';
+		$contentType = 'application/xml';
+
+		// Authenticate to S3
+		return $this->authenticate($bucket, array(
+			'verb' => HTTP_PUT,
+			'method' => 'enable_versioning',
+			'body' => $body,
+			'contentType' => $contentType,
+			'returnCurlHandle' => $returnCurlHandle
+		));
 	}
 
 	/**
@@ -1028,6 +1079,36 @@ class AmazonS3 extends CloudFusion
 	}
 
 	/**
+	 * Method: get_bucket_versioning()
+	 * 	Gets the versioning for a bucket.
+	 *
+	 * Access:
+	 * 	public
+ 	 *
+	 * Parameters:
+	 * 	bucket - _string_ (Required) The name of the bucket to be used.
+	 * 	returnCurlHandle - _boolean_ (Optional) A private toggle that will return the CURL handle for the request rather than actually completing the request. This is useful for MultiCURL requests.
+	 *
+	 * Returns:
+	 * 	<ResponseCore> object
+ 	 *
+	 * See Also:
+	 * 	
+	 * 	
+	 */
+	public function get_bucket_versioning($bucket, $returnCurlHandle = null)
+	{
+		// Add this to our request
+		$opt = array();
+		$opt['verb'] = HTTP_GET;
+		$opt['method'] = 'get_bucket_versioning';
+		$opt['returnCurlHandle'] = $returnCurlHandle;
+
+		// Authenticate to S3
+		return $this->authenticate($bucket, $opt);
+	}
+
+	/**
 	 * Method: set_bucket_acl()
 	 * 	Sets the ACL settings for a bucket.
 	 *
@@ -1141,6 +1222,7 @@ class AmazonS3 extends CloudFusion
 	 * 	etag - _string_ (Optional) The ETag header passed in from a previous request. If used, requires 'lastmodified' as well. Will return a 304 if file hasn't changed.
 	 * 	range - _string_ (Optional) A range of bytes to fetch from the file. Useful for downloading partial bits or completing incomplete files. Range notated with a hyphen (e.g. 0-10485759). Defaults to the complete file.
 	 * 	returnCurlHandle - _boolean_ (Optional) A private toggle that will return the CURL handle for the request rather than actually completing the request. This is useful for MultiCURL requests.
+	 *  versionId - _string (Optional) AWS provided string representing the version of this object to be returned	 
 	 *
 	 * Returns:
 	 * 	<ResponseCore> object
@@ -1157,7 +1239,8 @@ class AmazonS3 extends CloudFusion
 		$opt['verb'] = HTTP_GET;
 		$opt['method'] = 'get_object';
 		$opt['filename'] = $filename;
-
+		$opt['versionId'] = $versionId;
+		
 		// Authenticate to S3
 		return $this->authenticate($bucket, $opt);
 	}
@@ -1868,7 +1951,7 @@ class AmazonS3 extends CloudFusion
 		// Was the request successful?
 		if ($object->isOK())
 		{
-			$url = $object->header['x-cloudfusion-requesturl'];
+			$url = $object->header['x-tarzan-requesturl'];
 
 			// If we have a virtual host value, use that instead of Amazon's hostname. There are better ways of doing this, but it works for now.
 			if ($this->vhost)
